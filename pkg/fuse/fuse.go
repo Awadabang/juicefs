@@ -588,6 +588,8 @@ var fsserv *fuse.Server
 
 func Shutdown() bool {
 	if fsserv != nil {
+		// 关闭 Kafka Logger
+		vfs.CloseKafkaLogger()
 		return fsserv.Shutdown()
 	}
 	return false

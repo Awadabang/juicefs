@@ -137,6 +137,9 @@ type Config struct {
 	BackupSkipTrash      bool
 	FastResolve          bool   `json:",omitempty"`
 	AccessLog            string `json:",omitempty"`
+	AccessLogKafkaBrokers string `json:",omitempty"` // Kafka brokers for access log
+	AccessLogKafkaTopic   string `json:",omitempty"` // Kafka topic for access log
+	AccessLogKafkaEnabled bool   `json:",omitempty"` // Enable Kafka access log
 	Subdir               string `json:",omitempty"`
 	PrefixInternal       bool
 	HideInternal         bool
@@ -1285,6 +1288,12 @@ func NewVFS(conf *Config, m meta.Meta, store chunk.ChunkStore, registerer promet
 
 	go v.cleanupModified()
 	initVFSMetrics(v, writer, reader, registerer)
+
+	// 初始化 Kafka Logger
+	if conf.AccessLogKafkaEnabled {
+		initKafkaLogger(conf.AccessLogKafkaBrokers, conf.AccessLogKafkaTopic)
+	}
+
 	return v
 }
 

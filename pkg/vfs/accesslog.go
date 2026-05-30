@@ -29,6 +29,11 @@ import (
 )
 
 var (
+	kafkaLogger *KafkaLogger
+	kafkaLock   sync.RWMutex
+)
+
+var (
 	opsDurationsHistogram = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    "fuse_ops_durations_histogram_seconds",
 		Help:    "Operations latency distributions.",
@@ -99,6 +104,55 @@ func logit(ctx Context, method string, err syscall.Errno, format string, args ..
 		default:
 		}
 	}
+
+	// 发送到 Kafka
+	kafkaLock.RLock()
+	k := kafkaLogger
+	kafkaLock.RUnlock()
+
+	if k != nil {
+		var parentInode uint64
+		var name string
+
+		// 根据不同操作类型提取参数
+		switch method {
+		case "lookup", "create", "mkdir", "unlink", "rmdir", "link", "symlink":
+			if len(args) >= 2 {
+				parentInode = extractInode(args[0])
+				name = extractName(args[1])
+			}
+		case "getattr", "readdir", "opendir", "readlink", "releasedir", "release":
+			if len(args) >= 1 {
+				parentInode = extractInode(args[0])
+			}
+		case "rename":
+			if len(args) >= 4 {
+				parentInode = extractInode(args[0])
+				name = extractName(args[1])
+			}
+		case "read":
+			if len(args) >= 4 {
+				parentInode = extractInode(args[0])
+			}
+		case "open":
+			if len(args) >= 2 {
+				parentInode = extractInode(args[0])
+			}
+		}
+
+		record := &AccessLogRecord{
+			Timestamp:   t,
+			Method:      method,
+			ParentInode: parentInode,
+			Name:        name,
+			UID:         ctx.Uid(),
+			GID:         ctx.Gid(),
+			PID:         ctx.Pid(),
+			Duration:    used.Seconds(),
+			Error:       errnoToUint32(err),
+		}
+		k.Send(record)
+	}
 }
 
 func openAccessLog(fh uint64) uint64 {
@@ -146,4 +200,34 @@ func readAccessLog(fh uint64, buf []byte) int {
 		}
 	}
 	return n
+}
+
+// initKafkaLogger 初始化 Kafka Logger
+func initKafkaLogger(brokers, topic string) {
+	if brokers == "" || topic == "" {
+		return
+	}
+	kafkaLock.Lock()
+	defer kafkaLock.Unlock()
+
+	if kafkaLogger != nil {
+		return
+	}
+
+	var err error
+	kafkaLogger, err = NewKafkaLogger(brokers, topic)
+	if err != nil {
+		logger.Warnf("Failed to init Kafka logger: %s", err)
+	}
+}
+
+// CloseKafkaLogger 关闭 Kafka Logger
+func CloseKafkaLogger() {
+	kafkaLock.Lock()
+	defer kafkaLock.Unlock()
+
+	if kafkaLogger != nil {
+		kafkaLogger.Close()
+		kafkaLogger = nil
+	}
 }
